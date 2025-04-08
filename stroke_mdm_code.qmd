@@ -1,0 +1,1184 @@
+---
+title: "Stroke MDM code"
+author: "Tom Payne"
+date: '`r format(Sys.time(), "%Y-%m-%d %H:%M")`'
+format:
+  html:
+    embed-resources: true
+    toc: true
+    toc_depth: 4
+    number_sections: true
+    toc_float: true
+    theme: united
+---
+
+```{r setup, include=FALSE}
+library(tidyverse)
+library(rms)
+library(ggplot2)
+library(ggpubr)
+library(gridExtra)
+library(ggrepel)
+library(knitr)
+library(kableExtra)
+library(jtools)
+library(broom)
+library(lme4)
+library(gt)
+library(gtsummary)
+library(pwr)
+library(janitor)
+library(patchwork)
+library(glmmTMB)
+library(ggeffects)
+library(effects)
+library(MuMIn)
+library(pscl)
+library(glmmTMB)
+library(MASS)
+library(performance)
+library(AER)
+library(patchwork)
+library(ggeffects)
+library(lmerTest)
+library(gtsummary)
+library(tidybayes)
+library(modelsummary)
+library(mgcv)
+library(brant)
+library(mice)
+library(ggforce)
+library(bayestestR)
+
+set.seed(123)
+
+knitr::opts_chunk$set(echo = F, message = F, warning = F, error = T, 
+                      fig.height = 4, out.width = "100%", 
+                      dev = "png", dpi = 300, cache = T)
+
+### Set filepaths 
+import_path_mac <- '/Users/thomasp/Documents/MPhil/stroke_mdm/'
+export_path_mac <- '/Users/thomasp/Documents/MPhil/stroke_mdm/'
+
+data1 <- read.csv(paste0(export_path_mac, "grand_rds_data - Copy.csv"))
+
+data <- data1 %>%
+  mutate(
+    across(c(patient_id, infarct_location, dose_classification, thrombectomy_post, preterm, thrombectomy_post), as.factor),
+    maternal_outcome_severity = factor(maternal_outcome_severity, 
+                                       levels = c("Healthy", "Mild", "Moderate", "Severe", "Death"), 
+                                       ordered = TRUE),
+    subgroup = factor(subgroup, 
+                      levels = c("Stroke", "Pulmonary embolism", "Deep vein thrombosis", "Mechanical valve thrombus"), 
+                       ordered = FALSE),
+    neonate_outcome_severity = ifelse(is.na(neonate_outcome_severity), "Healthy", 
+                                      ifelse(neonate_outcome_severity == "NS", "Not specified", neonate_outcome_severity)),
+    neonat_thrombolysis_relation = ifelse(is.na(neonat_thrombolysis_relation), "Good outcome", 
+                                      ifelse(neonat_thrombolysis_relation == "NS", "Not specified", neonat_thrombolysis_relation)),
+    mat_thrombolysis_relation = ifelse(is.na(mat_thrombolysis_relation), "Good outcome", 
+                                       ifelse(mat_thrombolysis_relation == "NS", "Not specified", mat_thrombolysis_relation)),
+    across(c(nihss, maternal_age, gestational_week, time_to_needle), 
+           ~ as.integer(case_when(
+             . == "NS" ~ NA_integer_,
+             TRUE ~ as.integer(.)))),
+    trimester = factor(case_when(
+      gestational_week >= 0 & gestational_week <= 12 ~ "1st",
+      gestational_week >= 13 & gestational_week <= 26 ~ "2nd",
+      gestational_week >= 27 ~ "3rd",
+      TRUE ~ NA_character_), levels = c("1st", "2nd", "3rd"), ordered = TRUE)) %>%
+   mutate(
+    neonat_thrombolysis_relation = factor(neonat_thrombolysis_relation, 
+                                          levels = c("Not specified", "Unclear", "Highly unlikely", "Unlikely", "Likely", "Highly likely", "Good outcome"), 
+                                          ordered = TRUE),
+    mat_thrombolysis_relation = factor(mat_thrombolysis_relation, 
+                                       levels = c("Not specified", "Unclear", "Highly unlikely", "Unlikely", "Likely", "Highly likely", "Good outcome"), 
+                                       ordered = TRUE),
+    neonate_outcome_severity = factor(neonate_outcome_severity, 
+                                       levels = c("Death", "Termination", "Major neonatal disease", "Minor neonatal disease", "Healthy", "Not specified"), 
+                                       ordered = FALSE))
+
+data_demo <- data %>%
+  mutate(
+    across(everything(), ~ case_when(
+      . == "NS" ~ NA,  
+      TRUE ~ .         
+    )),
+    infarct_location = droplevels(as.factor(infarct_location)), 
+    dose_classification = droplevels(as.factor(case_when(   
+      dose_classification == "High" ~ "Intravenous",
+      dose_classification == "Low" ~ "Intravenous",
+      dose_classification == "Catheter" ~ "Intra-arterial catheter",
+      TRUE ~ dose_classification
+    )))
+  )
+
+data_demo_overall <- data %>%
+  mutate(
+    across(everything(), ~ case_when(
+      . == "NS" ~ NA,  
+      TRUE ~ .         
+    )),
+    infarct_location = droplevels(as.factor(infarct_location)), 
+    dose_classification = droplevels(as.factor(case_when(       
+      dose_classification == "High" ~ "Intravenous (stroke dose)",
+      dose_classification == "Low" ~ "Intravenous (low dose)",
+      dose_classification == "Catheter" ~ "Intra-arterial catheter",
+      TRUE ~ dose_classification
+    )))
+  )
+
+theme_nice <- function() {
+  theme_minimal(base_family = "Verdana") +
+    theme(panel.grid.minor = element_blank(),
+          plot.title = element_text(family = "Verdana", face = "bold"),
+          axis.title = element_text(size = 14),
+          axis.text = element_text(size = 12),
+          strip.text = element_text(family = "Verdana", face = "bold",
+                                    size = rel(0.75), hjust = 0),
+          strip.background = element_rect(fill = "grey90", color = NA))
+}
+
+# Set the ggplot theme
+theme_set(theme_nice())
+
+theme_gtsummary_language("en", big.mark = "")
+
+```
+
+# Notes
+- Where gestational age is reported as a trimester, the middle week of that trimester is taken
+- Where something is reported as '4 months' gestation, we would take 17 weeks
+- 'Early second trimester' taken at 15 weeks
+- High dose rTPa cutoff of <50mg as low and >= 50mg as 'high' (young pregnant women, 50mg may by 0.9mg/kg)
+- High dose streptokinase taken as >= 1,500,000 U
+- Two CVST cases thrombolysed with CT after 3 days and 2 weeks - time to needle set as NA
+
+# Demographics 
+
+## Stroke only
+
+``` {r}
+
+tab <- data_demo %>%
+  filter(subgroup == "Stroke") %>%
+  mutate(
+    infarct_location = case_when(
+      str_detect(infarct_location, "MCA") ~ "Middle cerebral artery",
+      str_detect(infarct_location, "PCA") ~ "Posterior cerebral artery",
+      str_detect(infarct_location, "PICA") ~ "Posterior inferior cerebellar artery",
+      str_detect(infarct_location, "ICA") ~ "Internal carotid artery",
+      infarct_location == "Basilar" ~ "Basilar artery",
+      infarct_location == "CVST" ~ "Cerebral venous sinus thrombosis",
+      TRUE ~ infarct_location
+    ),
+    infarct_location = factor(
+      infarct_location,
+      levels = c(
+        "Internal carotid artery",
+        "Middle cerebral artery",
+        "Basilar artery",
+        "Posterior cerebral artery",
+        "Posterior inferior cerebellar artery",
+        "Cerebral venous sinus thrombosis"
+      )
+    )
+  ) %>%
+  dplyr::select(
+    "Year of publication" = year,
+    "Publication type" = study_type,
+    "Infarct location" = infarct_location,
+    "Maternal age (years)" = maternal_age,
+    "Gestational age (weeks)" = gestational_week,
+    "Gestational age (trimester)" = trimester,
+    "NIHSS at presentation" = nihss,
+    "Time from onset to thrombolysis (mins)" = time_to_needle,
+    "Thrombolytic agent" = lytic_agent,
+    "Thrombolytic route" = dose_classification,
+    "Endovascular thrombectomy following thrombolysis" = thrombectomy_post
+  ) %>%
+  tbl_summary(
+    missing = "no",
+    statistic = list(
+      all_continuous() ~ "{median} ({min}, {max})",
+      "Year of publication" ~ "{min} to {max}"
+    )
+  ) %>%
+  add_n(
+    statistic = "{N_miss} ({p_miss}%)",
+    col_label = "**Missing observations**",
+    last = TRUE
+  )
+
+  
+tab %>% 
+  as_gt() %>%
+  gt::gtsave(., "demographics.rtf")
+
+tab
+
+```
+
+## All data
+
+``` {r}
+
+tab <- data_demo_overall %>% 
+  dplyr::select(subgroup, 
+                "Year of publication" = year,
+                "Thrombolytic agent" = lytic_agent,
+                "Gestational age (weeks)" = gestational_week,
+                "Gestational age (trimester)" = trimester,
+                "Gestational age (weeks)" = gestational_week,
+                "Thrombolytic dose" = dose_classification,
+                "Maternal outcome" = maternal_outcome_severity,
+                "Fetal outcomes" = neonate_outcome_severity) %>%
+      tbl_summary(by = "subgroup", missing = "no", statistic = list(
+      all_continuous() ~ "{median} ({min}, {max})",
+      "Year of publication" ~ "{min} to {max}")) %>%
+  modify_spanning_header(c("stat_1", "stat_2", "stat_3", "stat_4") ~ "**Indication for thrombolysis**") %>%
+  add_overall() %>%
+  add_n(statistic = "{N_miss} ({p_miss}%)", col_label = "**Missing observations**", last = TRUE)
+
+tab %>% 
+  as_gt() %>%
+  gt::gtsave(., "demo_overall.rtf")
+
+tab
+
+```
+
+# Fetal outcomes by gestational age
+
+## Table
+
+``` {r}
+
+data_demo_overall %>% 
+  filter(subgroup == "Stroke") %>%
+  dplyr::select(trimester, 
+                "Fetal/neonatal outcome severity" = neonate_outcome_severity) %>%
+      tbl_summary(by = "trimester", missing = "no", statistic = list(all_continuous() ~ c("{median} ({min}, {max})")),
+                  sort = all_categorical() ~ "frequency") %>%
+  modify_spanning_header(c("stat_1", "stat_2", "stat_3") ~ "**Trimester at time of thrombolysis**") %>%
+  add_overall() %>%
+  add_n(statistic = "{N_miss} ({p_miss}%)", col_label = "**Missing observations**", last = TRUE)
+
+```
+
+
+## Analysis
+
+``` {r fig.height = 5, fig.width = 12}
+#| fig-width: 12
+#| fig-height: 5
+
+stroke <- data %>%
+      filter(subgroup == "Stroke") %>%
+      mutate(neonate_outcome_dichot = factor(ifelse(neonate_outcome_severity == "Healthy", 0, ifelse(neonate_outcome_severity == "Preterm", 0, 
+                                             ifelse(neonate_outcome_severity == "Termination", 1, ifelse(neonate_outcome_severity == "Death", 1, NA)))))) %>%
+      dplyr::select("patient_id", "study", "gestational_week", "neonate_outcome_dichot") %>%
+      na.omit() %>%
+      mutate(study = factor(study))
+
+all <- data %>%
+      mutate(neonate_outcome_dichot = as.numeric(ifelse(neonate_outcome_severity == "Healthy", 0, ifelse(neonate_outcome_severity == "Preterm", 0, 
+                                             ifelse(neonate_outcome_severity == "Termination", 1, ifelse(neonate_outcome_severity == "Death", 1, NA)))))) %>%
+      dplyr::select("patient_id", "study", "gestational_week", "neonate_outcome_dichot") %>%
+      na.omit() %>%
+      mutate(study = factor(study))
+
+priors_primary <- brms::prior(normal(0, 1), class = b)  +
+                  brms::prior(cauchy(0, 0.5), class = sd)
+
+m.brm <- brms::brm(neonate_outcome_dichot ~ gestational_week + (1|study),
+             family = "bernoulli",
+             data = all,
+             prior = priors_primary,
+             iter = 4000,
+             backend = "cmdstanr", 
+              cores = parallel::detectCores(),
+              chains = 4,
+              seed = 123)
+
+m.brm_stroke <- update(m.brm, newdata = stroke)
+
+avg_stroke <- data.frame(marginaleffects::avg_comparisons(m.brm_stroke, variables = list(gestational_week = -5))) %>%
+    dplyr::select(term:conf.high)
+avg_stroke$analysis <- "Stroke patients only"
+
+avg_all <- data.frame(marginaleffects::avg_comparisons(m.brm, variables = list(gestational_week = -5))) %>%
+    dplyr::select(term:conf.high)
+avg_all$analysis <- "Thrombolysis for all indications"
+
+df <- rbind(avg_all, avg_stroke) %>%
+    dplyr::select(analysis, estimate, conf.low, conf.high) %>%
+    mutate(across(c(estimate, conf.low, conf.high), ~ sprintf("%.1f", . * 100))) %>%
+    mutate(est = paste0(estimate, "%", " (", conf.low, ", ", conf.high, ")")) %>%
+    dplyr::select(analysis, est) 
+
+library(scales)
+
+all_plot <- marginaleffects::plot_predictions(m.brm, condition = "gestational_week", allow_new_levels = TRUE, vcov = TRUE) +
+      labs(x = "Gestational age (weeks)", y = "Probability of fetal death", title = "A: Thrombolysis for all indications") +
+      scale_y_continuous(labels = percent_format(accuracy = 1), limits = c(0, 1)) + 
+      annotate("text", x = 4, y = 0.90, hjust = 0, fontface = "bold", colour = RColorBrewer::brewer.pal(3, "Set1")[[1]],size = 4.5,
+           label = paste("Risk increase for fetal death per 5-week decrease\nin gestational age (95%CrI): ", df$est[[1]])) +
+      theme(legend.position = "none")
+
+stroke_plot <- marginaleffects::plot_predictions(m.brm_stroke, condition = "gestational_week", allow_new_levels = TRUE, vcov = TRUE) +
+      labs(x = "Gestational age (weeks)", y = "Probability of fetal death", title = "B: Stroke patients only") +
+        annotate("text", x = 8, y = 0.90, hjust = 0, fontface = "bold", colour = RColorBrewer::brewer.pal(3, "Set1")[[2]], size = 4.3,
+           label = paste("Risk increase for fetal death per 5-week decrease\nin gestational age (95%CrI): ", df$est[[2]])) +
+      scale_y_continuous(labels = percent_format(accuracy = 1), limits = c(0, 1)) + 
+      theme(legend.position = "none")
+
+grid.arrange(all_plot, stroke_plot, ncol = 2)
+```
+
+# Thrombolytic dose ~ fetal outcome
+
+## Plot
+
+``` {r fig.height = 6, fig.width = 7}
+#| fig-width: 7
+#| fig-height: 6
+
+dat_bar <- data_demo_overall %>%
+  mutate(dose_classification = as.character(dose_classification)) %>%
+  mutate(dose_classification = ifelse(is.na(dose_classification), "Not specified", dose_classification)) %>%
+  mutate(dose_classification = factor(dose_classification)) 
+
+# Plot for maternal outcome severity
+ggplot(dat_bar, aes(x = subgroup, fill = dose_classification)) +
+  geom_bar(position = "stack", width = 0.7) +  
+  labs(x = NULL, 
+       y = "Count", 
+       fill = "Thrombolysis dose\nclassification") +
+  theme(
+    axis.text.x = element_text(angle = 30, hjust = 1, face = "bold", size = 12),  # Bold x-axis labels
+    legend.text = element_text(size = 12),  # Increase legend text size
+    legend.title = element_text(size = 12)  # Increase legend title size
+  ) + 
+  scale_fill_manual(values = RColorBrewer::brewer.pal(4, "Set2"))
+
+```
+
+## Analysis
+
+``` {r fig.height = 5, fig.width = 8}
+#| fig-width: 8
+#| fig-height: 5
+
+all <- data_demo_overall %>%
+  mutate(
+    neonate_outcome_dichot = as.numeric(ifelse(neonate_outcome_severity == "Healthy", 0,
+                                               ifelse(neonate_outcome_severity == "Major neonatal disease", 0,
+                                               ifelse(neonate_outcome_severity == "Minor neonatal disease", 0, 
+                                               ifelse(neonate_outcome_severity == "Termination", 1, 
+                                               ifelse(neonate_outcome_severity == "Death", 1, NA))))))) %>%
+  dplyr::select("patient_id", "study", "dose_classification", "neonate_outcome_dichot", "subgroup", "gestational_week") %>%
+  na.omit() %>%
+  mutate(study = factor(study))
+
+priors_primary <- brms::prior(normal(0, 1), class = b) +
+                  brms::prior(cauchy(0, 0.5), class = sd)
+
+m.brm <- brms::brm(neonate_outcome_dichot ~ dose_classification + subgroup + gestational_week + (1|study),
+                   family = "bernoulli",
+                   data = all,
+                   prior = priors_primary,
+                  iter = 4000,
+                  backend = "cmdstanr", 
+                  cores = parallel::detectCores(),
+                  chains = 4,
+                  seed = 123)
+
+avg <- data.frame(marginaleffects::avg_comparisons(m.brm, variables = list(dose_classification = "pairwise"), re_formula = NULL)) %>%
+    dplyr::select(term:conf.high)
+
+df <- avg %>%
+    dplyr::select(estimate, conf.low, conf.high) %>%
+    mutate(across(c(estimate, conf.low, conf.high), ~ sprintf("%.1f", . * 100))) %>%
+    mutate(est = paste0(estimate, "%", " (", conf.low, ", ", conf.high, ")")) %>%
+    dplyr::select(est)
+
+dist <- marginaleffects::avg_predictions(m.brm, variables = "dose_classification", re_formula = NULL) %>%
+  marginaleffects::get_draws()
+
+library(scales)
+
+labs <- c("Intra-arterial catheter", "Low dose", "Stroke dose")
+
+ggplot(dist, aes(x = draw, fill = dose_classification, color = dose_classification)) +
+    stat_slab(slab_alpha = .4) +
+    stat_pointinterval(position = position_dodge(width = .4, preserve = "single")) +
+    labs(x = "Predicted risk of fetal death/termination",
+         y = "",
+         fill = "dose_classification") +
+  annotate("text", x = 0.22, y = 0.85, fontface = "bold", size = 4, hjust = 0,
+           label = paste("Average marginal effect (risk\ndifference, (95%CrI)):\n  Low dose - catheter = ", df$est[[1]], 
+                         "\n  Stroke dose - catheter = ", df$est[[2]],
+                         "\n  Stroke - low dose = ", df$est[[3]])) +
+  scale_x_continuous(labels = scales::percent_format(accuracy = 1), limits = c(0, 0.4)) + 
+  scale_fill_manual(
+    values = RColorBrewer::brewer.pal(3, "Set1"),
+    labels = labs,
+    name = "Thrombolytic dose") +
+  scale_color_manual(
+    values = RColorBrewer::brewer.pal(3, "Set1"),
+    labels = labs,
+    name = "Thrombolytic dose") +
+    guides(fill = "none", color = guide_legend(override.aes = list(fill = NA))) +
+  theme(
+    legend.position = c(0.3, 0.9),
+    legend.justification = c(1, 1),
+    legend.background = element_rect(fill = "grey95", color = "black"),
+        axis.text.y = element_blank(), 
+        axis.ticks.y = element_blank())
+
+```
+
+# Proportion preterm
+
+- Normal distribution from WHO data converted to beta distribution using method here: https://stats.stackexchange.com/questions/12232/calculating-the-parameters-of-a-beta-distribution-using-the-mean-and-variance
+- filtered out all fetuses who died and the not specified values
+
+``` {r fig.height = 9, fig.width = 8}
+#| fig-width: 8
+#| fig-height: 9
+
+
+dat_preterm <- data %>%
+  filter(!preterm == "NS", !preterm == "In utero death")
+
+data_prop <- data.frame(Sample  = c("mdm", "stroke", "population"),
+                        n = c(nrow(dat_preterm[dat_preterm$preterm == "Preterm",]), 
+                              dat_preterm %>% filter(preterm == "Preterm", subgroup == "Stroke") %>% nrow(), 5609),
+                        total = c(nrow(dat_preterm[!is.na(dat_preterm$preterm),]), 
+                                  dat_preterm %>% filter(subgroup == "Stroke") %>% nrow(), 71915))
+
+
+model_logit <- brms::brm(
+  brms::bf(n | trials(total) ~ 0 + Sample),
+  data = data_prop,
+  family = binomial(link = "identity"),
+  prior = c(brms::prior(beta(1, 1), class = b, lb = 0, ub = 1)),
+  sample_prior = TRUE,
+  iter = 4000,
+  backend = "cmdstanr", 
+  cores = parallel::detectCores(),
+  chains = 4,
+  seed = 123)
+
+coefs <- data.frame(fixef(model_logit)) %>%
+    mutate(across(c(Estimate, Q2.5, Q97.5), ~ sprintf("%.1f", . * 100))) %>%
+    mutate(est = paste0(Estimate, "% (", Q2.5, ", ", Q97.5, ")")) %>%
+    dplyr::select(est) 
+
+indiv <- model_logit %>% 
+      epred_draws(newdata = data_prop) %>% 
+      mutate(.epred_prop = .epred / total) %>% 
+      ggplot(aes(x = .epred_prop, fill = Sample, color = Sample)) +  
+      ggdist::scale_thickness_shared() +
+      stat_slab(alpha = 0.7) +
+      stat_pointinterval(position = position_dodge(width = .2, preserve = "single")) +
+      scale_x_continuous(labels = scales::label_percent(), expand = c(0, 0.015)) +
+      scale_fill_manual(
+        values = RColorBrewer::brewer.pal(3, "Set2"), 
+        labels = c("mdm" = paste0("Pregnant thrombolysis patients (all): ", coefs[1,]), 
+                   "population" = paste0("General pregnant population\n(middle/high income countries): ", coefs[2,]),
+                   "stroke" = paste0("Pregnant thrombolysis patients (stroke only): ", coefs[3,])),
+        name = "Cohort average (95%CrI)") +
+      scale_color_manual(
+        values = RColorBrewer::brewer.pal(3, "Set2"), 
+        labels = c("mdm" = paste0("Pregnant thrombolysis patients (all): ", coefs[1,]), 
+                   "population" = paste0("General pregnant population\n(middle/high income countries): ", coefs[2,]),
+                   "stroke" = paste0("Pregnant thrombolysis patients (stroke only): ", coefs[3,])),
+        name = "Cohort average (95%CrI)") +
+      guides(fill = "none", color = guide_legend(override.aes = list(fill = NA))) +
+      theme(axis.text.y = element_blank()) +
+      theme(
+        legend.position = c(0.98, 0.9),  
+        legend.justification = c(1, 1),
+        legend.background = element_rect(fill = "grey95", color = "black")) +
+      labs(x = "Proportion of births that were preterm", y = NULL,
+           title = "A: Cohort-specific estimates of preterm birth proportions")
+
+diff <- as.data.frame(brms::hypothesis(model_logit, "Samplemdm > Samplepopulation")$hypothesis) %>%
+   rbind(as.data.frame(brms::hypothesis(model_logit, "Samplestroke > Samplepopulation")$hypothesis)) %>%
+    dplyr::select(Evid.Ratio, Post.Prob) %>%
+    mutate(across(c(Evid.Ratio), ~ sprintf("%.1f", .))) %>%
+    mutate(across(c(Post.Prob), ~ sprintf("%.1f", . * 100))) %>%
+    mutate(est = paste0(Post.Prob, "% (", Evid.Ratio, ")")) %>%
+    dplyr::select(est) 
+
+diff_draws <- model_logit %>% 
+  epred_draws(newdata = data_prop) %>% 
+  mutate(.epred_prop = .epred / total) %>% 
+  ungroup() %>% 
+  mutate(Sample = fct_relevel(Sample, "population")) %>% 
+  compare_levels(.epred_prop, by = Sample,
+                 comparison = list(c("mdm", "population"), c("stroke", "population")))
+
+diff_est <- diff_draws %>%
+  median_qi() %>%
+  mutate(across(c(.epred_prop, .lower, .upper), ~ sprintf("%.1f", . * 100))) %>%
+  mutate(cred = paste0(.epred_prop, "% (", .lower, "%, ", .upper, "%)")) %>%
+    dplyr::select(cred) 
+
+diff_plot <- diff_draws %>% 
+  ggplot(aes(x = .epred_prop, fill = RColorBrewer::brewer.pal(3, "Set3")[1])) +
+  stat_halfeye() +
+  coord_cartesian(clip = "off") + 
+  annotate("text", x = 0.08, y = 0.5, label = paste("Mean difference in proportions\n(95%CrI): ", diff_est$cred), 
+           size = 4, hjust = 0, fontface = "bold") +
+  scale_fill_manual(
+        values = RColorBrewer::brewer.pal(3, "Set3")[1],
+        labels = "Pregnant thrombolysis patients\nminus general pregnant population",
+        name = "Difference in proportions") +
+  scale_x_continuous(labels = scales::label_percent(), expand = c(0, 0.015)) +
+  theme(axis.text.y = element_blank()) +
+  theme(
+        legend.position = c(0.8, 0.95),  
+        legend.justification = c(1, 1),
+        legend.background = element_rect(fill = "grey95", color = "black")) +
+  labs(x = "Difference in proportion of preterm births", y = NULL)
+
+diff_plot <- diff_draws %>% 
+  ggplot(aes(x = .epred_prop, fill = Sample, color = Sample)) +
+  stat_slab(alpha = 0.7) +
+  stat_pointinterval(position = position_dodge(width = .2, preserve = "single")) +
+  coord_cartesian(clip = "off") + 
+  annotate("text", x = 0.08, y = 0.55, label = paste("Mean difference (95%CrI): ", 
+                                                    diff_est[1,], "\nProb. of higher proportion (evidence ratio): ", diff[1,]), 
+           size = 3.5, hjust = 0, fontface = "bold",
+           color = RColorBrewer::brewer.pal(3, "Set1")[1]) +
+  annotate("text", x = 0.08, y = 0.35, label = paste("Mean difference (95%CrI): ", 
+                                                    diff_est[2,], "\nProb. of higher proportion (evidence ratio): ", diff[2,]), 
+           size = 3.5, hjust = 0, fontface = "bold",
+           color = RColorBrewer::brewer.pal(3, "Set1")[2]) +
+  scale_fill_manual(
+        values = RColorBrewer::brewer.pal(3, "Set1"),
+        labels = c("mdm - population" = "Thrombolysis patients\n(all) minus general pregnant population",
+                   "stroke - population" = "Thrombolysis patients\n(stroke only) minus general pregnant population"),
+        name = "Comparison") +
+  scale_color_manual(
+        values = RColorBrewer::brewer.pal(3, "Set1"),
+        labels = c("mdm - population" = "Thrombolysis patients\n(all) minus general pregnant population",
+                   "stroke - population" = "Thrombolysis patients\n(stroke only) minus general pregnant population"),
+        name = "Comparison") +
+  scale_x_continuous(labels = scales::label_percent(), expand = c(0, 0.015), limits = c(-0.1, 0.25)) +
+  theme(axis.text.y = element_blank()) +
+  theme(
+        legend.position = c(0.95, 0.95),  
+        legend.justification = c(1, 1),
+        legend.background = element_rect(fill = "grey95", color = "black")) +
+  labs(x = "Difference in proportion of preterm births", y = NULL,
+       title = "B: Comparisons of the preterm birth rates between cohorts")
+
+
+layout <- c(
+  patchwork::area(t = 0, l = 0, b = 10, r = 40),
+  patchwork::area(t = 11, l = 0, b = 18, r = 40))
+
+indiv + diff_plot + plot_layout(design = layout)
+
+```
+
+# Proportion with death/termination
+
+- need to do overall miscarriage rates as no reliable data for individual trimester. Data obtained from https://www.thelancet.com/journals/lancet/article/PIIS0140-6736(21)00682-6/abstract
+
+``` {r fig.height = 9, fig.width = 8}
+#| fig-width: 8
+#| fig-height: 9
+
+neonat <- data %>%
+  mutate(
+    neonate_outcome_dichot = as.numeric(ifelse(neonate_outcome_severity == "Healthy", 0,
+                                               ifelse(neonate_outcome_severity == "Major neonatal disease", 0,
+                                               ifelse(neonate_outcome_severity == "Minor neonatal disease", 0, 
+                                               ifelse(neonate_outcome_severity == "Termination", 1, 
+                                               ifelse(neonate_outcome_severity == "Death", 1, NA))))))) %>%
+  filter(!is.na(neonate_outcome_dichot))
+
+
+data_prop <- data.frame(Sample  = c("mdm", "stroke", "population"),
+                        n = c(neonat %>% filter(neonate_outcome_dichot == 1) %>% nrow(), 
+                              neonat %>% filter(neonate_outcome_dichot == 1, subgroup == "Stroke") %>% nrow(), 68),
+                        total = c(neonat %>% nrow(), neonat %>% filter(subgroup == "Stroke") %>% nrow(), 447))
+
+model_logit <- brms::brm(
+  brms::bf(n | trials(total) ~ 0 + Sample),
+  data = data_prop,
+  family = binomial(link = "identity"),
+  prior = c(brms::prior(beta(1, 1), class = b, lb = 0, ub = 1)),
+  sample_prior = TRUE,
+  iter = 4000,
+  backend = "cmdstanr", 
+  cores = parallel::detectCores(),
+  chains = 4,
+  seed = 123)
+
+coefs <- data.frame(fixef(model_logit)) %>%
+    mutate(across(c(Estimate, Q2.5, Q97.5), ~ sprintf("%.1f", . * 100))) %>%
+    mutate(est = paste0(Estimate, "% (", Q2.5, ", ", Q97.5, ")")) %>%
+    dplyr::select(est) 
+
+indiv <- model_logit %>% 
+      epred_draws(newdata = data_prop) %>% 
+      mutate(.epred_prop = .epred / total) %>% 
+      ggplot(aes(x = .epred_prop, fill = Sample, color = Sample)) +  
+      ggdist::scale_thickness_shared() +
+      stat_slab(alpha = 0.7) +
+      stat_pointinterval(position = position_dodge(width = .2, preserve = "single")) +
+      scale_x_continuous(labels = scales::label_percent(), expand = c(0, 0.015)) +
+      scale_fill_manual(
+        values = RColorBrewer::brewer.pal(3, "Set2"), 
+        labels = c("mdm" = paste0("Pregnant thrombolysis patients (all): ", coefs[1,]), 
+                   "population" = paste0("General pregnant population: ", coefs[2,]),
+                   "stroke" = paste0("Pregnant thrombolysis patients (stroke only): ", coefs[3,])),
+        name = "Cohort average (95%CrI)") +
+      scale_color_manual(
+        values = RColorBrewer::brewer.pal(3, "Set2"), 
+        labels = c("mdm" = paste0("Pregnant thrombolysis patients (all): ", coefs[1,]), 
+                   "population" = paste0("General pregnant population: ", coefs[2,]),
+                   "stroke" = paste0("Pregnant thrombolysis patients (stroke only): ", coefs[3,])),
+        name = "Cohort average (95%CrI)") +
+      guides(fill = "none", color = guide_legend(override.aes = list(fill = NA))) +
+      theme(axis.text.y = element_blank()) +
+      theme(
+        legend.position = c(0.98, 0.9),  
+        legend.justification = c(1, 1),
+        legend.background = element_rect(fill = "grey95", color = "black")) +
+      labs(x = "Proportion of pregnancies with fetal death/termination", y = NULL,
+           title = "A: Cohort-specific estimates of fetal death/termination")
+
+diff <- as.data.frame(brms::hypothesis(model_logit, "Samplemdm > Samplepopulation")$hypothesis) %>%
+   rbind(as.data.frame(brms::hypothesis(model_logit, "Samplestroke > Samplepopulation")$hypothesis)) %>%
+    dplyr::select(Evid.Ratio, Post.Prob) %>%
+    mutate(across(c(Evid.Ratio), ~ sprintf("%.1f", .))) %>%
+    mutate(across(c(Post.Prob), ~ sprintf("%.1f", . * 100))) %>%
+    mutate(est = paste0(Post.Prob, "% (", Evid.Ratio, ")")) %>%
+    dplyr::select(est) 
+
+diff_draws <- model_logit %>% 
+  epred_draws(newdata = data_prop) %>% 
+  mutate(.epred_prop = .epred / total) %>% 
+  ungroup() %>% 
+  mutate(Sample = fct_relevel(Sample, "population")) %>% 
+  compare_levels(.epred_prop, by = Sample,
+                 comparison = list(c("mdm", "population"), c("stroke", "population")))
+
+diff_est <- diff_draws %>%
+  median_qi() %>%
+  mutate(across(c(.epred_prop, .lower, .upper), ~ sprintf("%.1f", . * 100))) %>%
+  mutate(cred = paste0(.epred_prop, "% (", .lower, "%, ", .upper, "%)")) %>%
+    dplyr::select(cred) 
+
+diff_plot <- diff_draws %>% 
+  ggplot(aes(x = .epred_prop, fill = Sample, color = Sample)) +
+  stat_slab(alpha = 0.7) +
+  stat_pointinterval(position = position_dodge(width = .2, preserve = "single")) +
+  coord_cartesian(clip = "off") + 
+  annotate("text", x = 0.09, y = 0.55, label = paste("Mean difference (95%CrI): ", 
+                                                    diff_est[1,], "\nProb. of higher proportion (evidence ratio): ", diff[1,]), 
+           size = 2.9, hjust = 0, fontface = "bold",
+           color = RColorBrewer::brewer.pal(3, "Set1")[1]) +
+  annotate("text", x = 0.09, y = 0.35, label = paste("Mean difference (95%CrI): ", 
+                                                    diff_est[2,], "\nProb. of higher proportion (evidence ratio): ", diff[2,]), 
+           size = 2.9, hjust = 0, fontface = "bold",
+           color = RColorBrewer::brewer.pal(3, "Set1")[2]) +
+  scale_fill_manual(
+        values = RColorBrewer::brewer.pal(3, "Set1"),
+        labels = c("mdm - population" = "Pregnant thrombolysis patients\n(all) minus general population",
+                   "stroke - population" = "Pregnant thrombolysis patients\n(stroke only) minus general population"),
+        name = "Comparison") +
+  scale_color_manual(
+        values = RColorBrewer::brewer.pal(3, "Set1"),
+        labels = c("mdm - population" = "Pregnant thrombolysis patients\n(all) minus general population",
+                   "stroke - population" = "Pregnant thrombolysis patients\n(stroke only) minus general population"),
+        name = "Comparison") +
+  scale_x_continuous(labels = scales::label_percent(), expand = c(0, 0.015)) +
+  theme(axis.text.y = element_blank()) +
+  theme(
+        legend.position = c(0.9, 0.95),  
+        legend.justification = c(1, 1),
+        legend.background = element_rect(fill = "grey95", color = "black")) +
+  labs(x = "Difference in proportion of fetal deaths/termination", y = NULL,
+       title = "B: Comparisons of the fetal death rates between cohorts")
+
+layout <- c(
+  patchwork::area(t = 0, l = 0, b = 9, r = 40),
+  patchwork::area(t = 10, l = 0, b = 18, r = 40))
+
+indiv + diff_plot + plot_layout(design = layout)
+
+```
+
+# Fetal outcome
+
+## Plots
+
+``` {r fig.height = 9, fig.width = 8}
+#| fig-width: 8
+#| fig-height: 9
+
+dat_bar <- data %>%
+  mutate(
+    subgroup = case_when(
+      subgroup == "Deep vein thrombosis" ~ "DVT",
+      subgroup == "Pulmonary embolism" ~ "PE",
+      subgroup == "Mechanical valve thrombus" ~ "MVT",
+      TRUE ~ subgroup))
+
+custom_colors <- c("Death" = "#000000", 
+                   "Major neonatal disease" = '#fd8d3c',
+                   "Minor neonatal disease" = "#fed976",
+                   "Healthy" = '#238b45',  
+                   "Termination" = "#e31a1c",
+                   "Not specified" = "#999999")
+
+fet <- ggplot(dat_bar, aes(x = subgroup, fill = neonate_outcome_severity)) +
+  geom_bar(position = "stack", width = 0.7) +  
+  labs(x = NULL, 
+       y = "Count", 
+       fill = "Fetal outcome",
+       title = "A: Fetal/neonatal outcomes by indication for thrombolysis") +
+  theme(
+    axis.text.x = element_text(face = "bold", size = 14),  
+    legend.text = element_text(size = 12), 
+    legend.title = element_text(size = 12)) + 
+  scale_fill_manual(values = custom_colors)
+
+custom_colors_1 <- c("Highly unlikely" = "#bdd7e7", 
+                   "Unlikely" = '#6baed6',
+                   "Likely" = "#2171b5",
+                   "Highly likely" = "#000066",
+                   "Good outcome" = '#238b45',  
+                   "Not specified" = "#999999",
+                   "Unclear" = "#CCCCCC")
+
+fet_rel <- ggplot(dat_bar, aes(x = neonate_outcome_severity, fill = neonat_thrombolysis_relation)) +
+  geom_bar(position = "stack") +  
+  labs(x = NULL, 
+       y = "Count", 
+       fill = "Thrombolysis relation",
+       title = "B: Relationship of fetal/neonatal outcomes to thrombolysis") +
+  theme(
+    axis.text.x = element_text(angle = 30, hjust = 1, face = "bold", size = 9),
+    legend.text = element_text(size = 12),
+    legend.title = element_text(size = 12)) + 
+  scale_fill_manual(values = custom_colors_1) +
+  facet_zoom(ylim = c(0, 27))
+
+library(patchwork)
+
+layout <- c(
+  patchwork::area(t = 0, l = 0, b = 14, r = 34),
+  patchwork::area(t = 16, l = 0, b = 35, r = 34))
+
+fet + fet_rel + plot_layout(design = layout)
+
+```
+
+# Maternal outcome
+
+## Plots
+
+``` {r fig.height = 9, fig.width = 8}
+#| fig-width: 8
+#| fig-height: 9
+
+dat_bar <- data %>%
+  mutate(
+    subgroup = case_when(
+      subgroup == "Deep vein thrombosis" ~ "DVT",
+      subgroup == "Pulmonary embolism" ~ "PE",
+      subgroup == "Mechanical valve thrombus" ~ "MVT",
+      TRUE ~ subgroup)) %>%
+  mutate(maternal_outcome_severity = factor(maternal_outcome_severity, levels = rev(levels(maternal_outcome_severity))))
+
+# Define the custom color palette where "Death" and "Healthy" have the same colors across both variables
+custom_colors <- c("Death" = "#000000", 
+                   "Severe" = "#e31a1c",
+                   "Moderate" = "#fd8d3c",
+                   "Mild" = "#fed976",
+                   "Healthy" = "#238b45") 
+
+
+mat <- ggplot(dat_bar, aes(x = subgroup, fill = maternal_outcome_severity)) +
+            geom_bar(position = "stack", width = 0.7) +  
+            labs(x = NULL, 
+                 y = "Count", 
+                 fill = "Maternal outcome",
+                 title = "A: Maternal outcomes by indication for thrombolysis") +
+            theme(
+              axis.text.x = element_text(face = "bold", size = 14),
+              legend.text = element_text(size = 12),
+              legend.title = element_text(size = 12)) +
+           scale_fill_manual(values = custom_colors)
+
+custom_colors_1 <- c("Highly unlikely" = "#bdd7e7", 
+                   "Unlikely" = '#6baed6',
+                   "Likely" = "#2171b5",
+                   "Highly likely" = "#000066",
+                   "Good outcome" = '#238b45')
+  
+
+mat_rel <- ggplot(dat_bar, aes(x = maternal_outcome_severity, fill = mat_thrombolysis_relation)) +
+  geom_bar(position = "stack") +  
+  labs(x =  NULL, 
+       y = "Count", 
+       fill = "Thrombolysis Relation",
+       title = "B: Relationship of maternal outcomes to thrombolysis") +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1, face = "bold", size = 14),
+              legend.text = element_text(size = 12),
+              legend.title = element_text(size = 12)) +
+  scale_fill_manual(values = custom_colors_1) +
+  facet_zoom(ylim = c(0, 20))
+
+grid.arrange(mat, mat_rel, ncol = 1)
+
+```
+
+## Analysis
+
+``` {r fig.height = 9, fig.width = 8}
+#| fig-width: 8
+#| fig-height: 9
+
+mat <- data %>%
+      filter(subgroup == "Stroke")
+
+data_prop <- data.frame(Sample  = c("mdm", "population"),
+                        n = c(0, 19),
+                        total = c(mat %>% nrow(), 3246))
+
+model_logit <- brms::brm(
+  brms::bf(n | trials(total) ~ 0 + Sample),
+  data = data_prop,
+  family = binomial(link = "identity"),
+  prior = c(brms::prior(beta(1, 1), class = b, lb = 0, ub = 1)),
+  sample_prior = TRUE,
+  iter = 4000,
+  backend = "cmdstanr", 
+  cores = parallel::detectCores(),
+  chains = 4,
+  seed = 123)
+
+coefs_draws <- model_logit %>%
+  spread_draws(b_Samplemdm, b_Samplepopulation) %>%
+  mode_hdi() %>%
+  mutate(across(b_Samplemdm:b_Samplepopulation.upper, ~ sprintf("%.2f", . * 100)))
+
+coefs <- tibble(
+  est = c(
+    paste0(coefs_draws$b_Samplemdm, "% (", coefs_draws$b_Samplemdm.lower, ", ", coefs_draws$b_Samplemdm.upper, ")"),
+    paste0(coefs_draws$b_Samplepopulation, "% (", coefs_draws$b_Samplepopulation.lower, ", ", coefs_draws$b_Samplepopulation.upper, ")")))
+
+indiv <- model_logit %>% 
+      epred_draws(newdata = data_prop) %>% 
+      mutate(.epred_prop = .epred / total) %>% 
+      ggplot(aes(x = .epred_prop, fill = Sample, color = Sample)) +  
+      ggdist::scale_thickness_shared() +
+      stat_slab(alpha = 0.7) +
+      stat_pointinterval(position = position_dodge(width = .2, preserve = "single"), point_interval = mode_hdi) +
+      scale_x_continuous(labels = scales::label_percent(), expand = c(0, 0.015), limits = c(0, 0.06)) +
+      scale_fill_manual(
+        values = RColorBrewer::brewer.pal(3, "Set2"), 
+        labels = c("mdm" = paste0("Pregnant thrombolysis patients (stroke): ", coefs[1,]), 
+                   "population" = paste0("population" = "SITS-ISTR young stroke population: ", coefs[2,])),
+        name = "Maximum a posteriori (95%HDI)") +
+      scale_color_manual(
+        values = RColorBrewer::brewer.pal(3, "Set2"), 
+        labels = c("mdm" = paste0("Pregnant thrombolysis patients (stroke): ", coefs[1,]), 
+                   "population" = paste0("population" = "SITS-ISTR young stroke population: ", coefs[2,])),
+        name = "Maximum a posteriori (95%HDI)") +
+      guides(fill = "none", color = guide_legend(override.aes = list(fill = NA))) +
+      theme(axis.text.y = element_blank()) +
+      theme(
+        legend.position = c(0.9, 0.8),  
+        legend.justification = c(1, 1),
+        legend.background = element_rect(fill = "grey95", color = "black")) +
+      labs(x = "Proportion of patients with symptomatic ICH", y = NULL,
+           title = "A: Cohort-specific estimates of symptomatic ICH")
+
+diff <- as.data.frame(brms::hypothesis(model_logit, "Samplemdm > Samplepopulation")$hypothesis) %>%
+    dplyr::select(Evid.Ratio, Post.Prob) %>%
+    mutate(across(c(Evid.Ratio), ~ sprintf("%.1f", .))) %>%
+    mutate(across(c(Post.Prob), ~ sprintf("%.1f", . * 100))) %>%
+    mutate(est = paste0(Post.Prob, "% (", Evid.Ratio, ")")) %>%
+    dplyr::select(est) 
+
+diff_draws <- model_logit %>% 
+  epred_draws(newdata = data_prop) %>% 
+  mutate(.epred_prop = .epred / total) %>% 
+  ungroup() %>% 
+  mutate(Sample = fct_relevel(Sample, "population")) %>% 
+  compare_levels(.epred_prop, by = Sample,
+                 comparison = "pairwise")
+
+diff_est <- diff_draws %>%
+  mode_hdi() %>%
+  mutate(across(c(.epred_prop, .lower, .upper), ~ sprintf("%.1f", . * 100))) %>%
+  mutate(cred = paste0(.epred_prop, "% (", .lower, "%, ", .upper, "%)")) %>%
+    dplyr::select(cred) 
+
+diff_plot <- diff_draws %>% 
+  ggplot(aes(x = .epred_prop, fill = RColorBrewer::brewer.pal(3, "Set3")[1])) +
+  stat_slab(alpha = 0.7) +
+  stat_pointinterval(point_interval = mode_hdi) +
+  coord_cartesian(clip = "off") + 
+  annotate("text", x = 0.02, y = 0.55, label = paste("Maximum a posteriori (95%HDI): ", 
+                                                    diff_est[1,], "\nProb. of higher proportion (evidence ratio): ", diff[1,]), 
+           size = 3.5, hjust = 0, fontface = "bold",
+           color = RColorBrewer::brewer.pal(3, "Set3")[1]) +
+  scale_fill_manual(
+        values = RColorBrewer::brewer.pal(3, "Set3")[1],
+        labels = "Pregnant thrombolysis patients\nminus young thrombolysis population",
+        name = "Comparison") +
+  scale_x_continuous(labels = scales::label_percent(), expand = c(0, 0.015), limits = c(-0.02, 0.06)) +
+  theme(axis.text.y = element_blank()) +
+  theme(
+        legend.position = c(0.7, 0.95),  
+        legend.justification = c(1, 1),
+        legend.background = element_rect(fill = "grey95", color = "black")) +
+  labs(x = "Difference in proportions of intracerebral haemorrhage", y = NULL,
+        title = "B: Comparison of maternal symptomatic ICH rates between cohorts")
+
+layout <- c(
+  patchwork::area(t = 0, l = 0, b = 10, r = 40),
+  patchwork::area(t = 11, l = 0, b = 18, r = 40))
+
+indiv + diff_plot + plot_layout(design = layout)
+
+```
+
+# Multiple imputation 
+
+## Primary outcome
+
+``` {r}
+ 
+preimp_df <- data %>%
+     mutate(neonate_outcome_dichot = as.numeric(ifelse(neonate_outcome_severity == "Healthy", 0,
+                                               ifelse(neonate_outcome_severity == "Major neonatal disease", 0,
+                                               ifelse(neonate_outcome_severity == "Minor neonatal disease", 0, 
+                                               ifelse(neonate_outcome_severity == "Termination", 1, 
+                                               ifelse(neonate_outcome_severity == "Death", 1, NA))))))) %>%
+      dplyr::select("patient_id", "study", "neonate_outcome_dichot", "subgroup")
+
+imp <- mice(preimp_df, maxit = 0)
+    
+predM <- imp$predictorMatrix
+meth <- imp$method
+    
+log <- c("neonate_outcome_dichot")
+meth[log] <- "logreg"
+
+imp2 <- mice(preimp_df, maxit = 5, m = 20,
+             predictorMatrix = predM, 
+             method = meth, print =  FALSE, .Random.seed = 123)
+
+imp_comp_1 <- mice::complete(imp2, action = "all")$`1`
+imp_comp_2 <- mice::complete(imp2, action = "all")$`2`
+imp_comp_3 <- mice::complete(imp2, action = "all")$`3`
+imp_comp_4 <- mice::complete(imp2, action = "all")$`4`
+imp_comp_5 <- mice::complete(imp2, action = "all")$`5`
+imp_comp_6 <- mice::complete(imp2, action = "all")$`6`
+imp_comp_7 <- mice::complete(imp2, action = "all")$`7`
+imp_comp_8 <- mice::complete(imp2, action = "all")$`8`
+imp_comp_9 <- mice::complete(imp2, action = "all")$`9`
+imp_comp_10 <- mice::complete(imp2, action = "all")$`10`
+imp_comp_11 <- mice::complete(imp2, action = "all")$`11`
+imp_comp_12 <- mice::complete(imp2, action = "all")$`12`
+imp_comp_13 <- mice::complete(imp2, action = "all")$`13`
+imp_comp_14 <- mice::complete(imp2, action = "all")$`14`
+imp_comp_15 <- mice::complete(imp2, action = "all")$`15`
+imp_comp_16 <- mice::complete(imp2, action = "all")$`16`
+imp_comp_17 <- mice::complete(imp2, action = "all")$`17`
+imp_comp_18 <- mice::complete(imp2, action = "all")$`18`
+imp_comp_19 <- mice::complete(imp2, action = "all")$`19`
+imp_comp_20 <- mice::complete(imp2, action = "all")$`20`
+
+imp_list <- list(imp_comp_1, imp_comp_2, imp_comp_3, imp_comp_4, imp_comp_5, imp_comp_6, imp_comp_7, imp_comp_8, imp_comp_9, imp_comp_10,
+                 imp_comp_11, imp_comp_12, imp_comp_13, imp_comp_14, imp_comp_15, imp_comp_16, imp_comp_17, imp_comp_18, imp_comp_19, imp_comp_20)
+
+population_n <- 68
+population_total <- 447
+
+data_imp_list <- lapply(imp_list, function(df) {
+  data.frame(
+    Sample = c("mdm", "stroke", "population"),
+    n = c(df %>% filter(neonate_outcome_dichot == 1) %>% nrow(), 
+          df %>% filter(subgroup == "Stroke", neonate_outcome_dichot == 1) %>% nrow(), 
+          population_n),
+    total = c(nrow(df), df %>% filter(subgroup == "Stroke") %>% nrow(), population_total)
+  )
+})
+
+model_imp <- brms::brm_multiple(
+  brms::bf(n | trials(total) ~ 0 + Sample),
+  data = data_imp_list,
+  family = binomial(link = "identity"),
+  prior = c(brms::prior(beta(1, 1), class = b, lb = 0, ub = 1)),
+  sample_prior = TRUE,
+  iter = 4000,
+  backend = "cmdstanr", 
+  cores = parallel::detectCores(),
+  chains = 4,
+  seed = 123)
+
+diff_draws <- model_imp %>% 
+  epred_draws(newdata = data_prop) %>% 
+  mutate(.epred_prop = .epred / total) %>% 
+  ungroup() %>% 
+  mutate(Sample = fct_relevel(Sample, "population")) %>% 
+  compare_levels(.epred_prop, by = Sample,
+                 comparison = list(c("mdm", "population"), c("stroke", "population")))
+
+tab <- diff_draws %>%
+  median_qi() %>%
+  mutate(across(c(.epred_prop, .lower, .upper), ~ sprintf("%.1f", . * 100))) %>%
+  mutate(cred = paste0(.epred_prop, "% (", .lower, "%, ", .upper, "%)")) %>%
+  mutate(samp = c("Overall pregnant thrombolysis cohort minus general pregnant population",
+                  "Pregnant thrombolysis cohort (stroke only) minus general pregnant population"),
+         total = c(data_imp_list[[1]][1,3], data_imp_list[[1]][2,3]),
+         n_imputed = nrow(imp2$imp$neonate_outcome_dichot)) %>%
+  dplyr::select(samp, cred, total, n_imputed) %>%
+  gt() %>%
+  cols_label(
+    samp = "Comparison",
+    cred = "Mean difference in proportion of fetal death",
+    n_imputed = "Number of imputed neonatal outcomes",
+    total = "Total number of included neonates")
+
+tab %>% 
+  gt::gtsave(., "primary_imp.rtf")
+
+tab
+
+```
+
+## Fetal outcome ~ thrombolytic dose
+
+``` {r}
+preimp_df <- data_demo_overall %>%
+  mutate(
+    neonate_outcome_dichot = as.numeric(ifelse(neonate_outcome_severity == "Healthy", 0,
+                                               ifelse(neonate_outcome_severity == "Major neonatal disease", 0,
+                                               ifelse(neonate_outcome_severity == "Minor neonatal disease", 0, 
+                                               ifelse(neonate_outcome_severity == "Termination", 1, 
+                                               ifelse(neonate_outcome_severity == "Death", 1, NA))))))) %>%
+  dplyr::select("patient_id", "study", "dose_classification", "neonate_outcome_dichot", "subgroup", "gestational_week") %>%
+  mutate(study = factor(study))
+
+imp <- mice(preimp_df, maxit = 0)
+    
+predM <- imp$predictorMatrix
+meth <- imp$method
+
+# dichotomous variables
+log <- c("neonate_outcome_dichot")
+meth[log] <- "logreg"
+
+# unordered categroical variables
+poly2 <- c("dose_classification")
+meth[poly2] <- "polyreg"
+
+imp2 <- mice(preimp_df, maxit = 5, m = 20,
+             predictorMatrix = predM, 
+             method = meth, print =  FALSE, .Random.seed = 123)
+
+priors_primary <- brms::prior(normal(0, 1), class = b) 
+
+m.brm <- brms::brm_multiple(neonate_outcome_dichot ~ dose_classification + subgroup + gestational_week + (1|study),
+                   family = "bernoulli",
+                   data = imp2,
+                   prior = priors_primary,
+                  iter = 4000,
+                  backend = "cmdstanr", 
+                  cores = parallel::detectCores(),
+                  chains = 4,
+                  seed = 123)
+
+data.frame(marginaleffects::avg_comparisons(m.brm, variables = list(dose_classification = "pairwise"), re_formula = NULL)) %>%
+    dplyr::select(term:conf.high) %>%
+    mutate(across(c(estimate, conf.low, conf.high), ~ sprintf("%.1f", . * 100))) %>%
+    mutate(est = paste0(estimate, "%", " (", conf.low, ", ", conf.high, ")")) %>%
+    dplyr::select(contrast, est) %>%
+    gt(rowname_col = "contrast") %>%
+    cols_label(est = "Risk difference for fetal death (95%CrI)")
+  
+```
+
+# Overall study table
+
+``` {r}
+collapsed_data <- data %>%
+  group_by(study) %>%
+  slice(1) %>%
+  ungroup()
+
+
+tab <- collapsed_data %>%
+  dplyr::select(study, year, subgroup) %>%
+  gt()
+
+tab %>% 
+  gt::gtsave(., "tbl_overall.rtf")
+
+tab
+
+```
+
+# Miscellaneous
+
+## Time to needle ~ fetal outcome
+
+``` {r fig.height = 5, fig.width = 8}
+#| fig-width: 8
+#| fig-height: 5
+
+stroke <- data %>%
+      filter(subgroup == "Stroke") %>%
+      mutate(neonate_outcome_dichot = factor(ifelse(neonate_outcome_severity == "Healthy", 0, ifelse(neonate_outcome_severity == "Preterm", 0, 
+                                             ifelse(neonate_outcome_severity == "Termination", 1, ifelse(neonate_outcome_severity == "Death", 1, NA)))))) %>%
+      dplyr::select("patient_id", "study", "time_to_needle", "neonate_outcome_dichot", "maternal_age", "nihss") %>%
+      na.omit() %>%
+      mutate(study = factor(study))
+
+priors_primary <- brms::prior(normal(0, 1), class = b) 
+
+m.brm <- brms::brm(neonate_outcome_dichot ~ time_to_needle + nihss + maternal_age + (1|study/patient_id),
+             family = "bernoulli",
+             data = stroke,
+             prior = priors_primary,
+              iter = 4000,
+              backend = "cmdstanr", 
+              cores = parallel::detectCores(),
+              chains = 4,
+              seed = 123)
+
+avg_stroke <- data.frame(marginaleffects::avg_comparisons(m.brm, variables = list(time_to_needle = 60))) %>%
+    dplyr::select(term:conf.high)
+avg_stroke$analysis <- "Stroke patients only"
+
+df <- avg_stroke %>%
+    dplyr::select(analysis, estimate, conf.low, conf.high) %>%
+    mutate(across(c(estimate, conf.low, conf.high), ~ sprintf("%.1f", . * 100))) %>%
+    mutate(est = paste0(estimate, "%", " (", conf.low, ", ", conf.high, ")")) %>%
+    dplyr::select(analysis, est) 
+
+library(scales)
+
+marginaleffects::plot_predictions(m.brm, condition = "time_to_needle", allow_new_levels = TRUE, vcov = FALSE) +
+      labs(x = "Onset to needle time (mins)", y = "Probability of fetal death", title = "Relationship between time to needle and fetal death,\nholding admission NIHSS score and maternal age at mean") +
+        annotate("text", x = 60, y = 0.25, hjust = 0, fontface = "bold", colour = RColorBrewer::brewer.pal(3, "Set1")[[2]], size = 4.3,
+           label = paste("Risk difference for fetal death per 1 hour increase\nin time from onset to needle (95%CrI): ", df$est[[1]])) +
+      scale_y_continuous(labels = percent_format(accuracy = 1), limits = c(0, 0.3)) + 
+      theme(legend.position = "none")
+```
+
+
